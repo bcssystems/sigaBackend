@@ -67,7 +67,7 @@ public class AuthController {
     }
 
     private ResponseEntity<AuthResponse> authenticatedResponse(AuthSession session, HttpServletResponse response) {
-        addCookie(response, "SIGA_ACCESS", session.accessToken(), "/api", 900);
+        addCookie(response, "SIGA_ACCESS", session.accessToken(), "/", 900);
         addCookie(response, "SIGA_REFRESH", session.refreshToken(), "/api/v1/auth", 604800);
         return ResponseEntity.ok(session.response());
     }
@@ -78,7 +78,7 @@ public class AuthController {
     }
 
     private void deleteCookies(HttpServletResponse response) {
-        addCookie(response, "SIGA_ACCESS", "", "/api", 0);
+        addCookie(response, "SIGA_ACCESS", "", "/", 0);
         addCookie(response, "SIGA_REFRESH", "", "/api/v1/auth", 0);
     }
 }

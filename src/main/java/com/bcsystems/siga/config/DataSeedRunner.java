@@ -9,6 +9,7 @@ import com.bcsystems.siga.repository.RolRepository;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
@@ -21,15 +22,21 @@ public class DataSeedRunner implements CommandLineRunner {
     private final RolRepository rolRepository;
     private final PersonaRepository personaRepository;
     private final PasswordEncoder passwordEncoder;
+    private final String seedAdminUsername;
+    private final String seedAdminPassword;
 
     public DataSeedRunner(PermisoRepository permisoRepository,
                           RolRepository rolRepository,
                           PersonaRepository personaRepository,
-                          PasswordEncoder passwordEncoder) {
+                          PasswordEncoder passwordEncoder,
+                          @Value("${app.security.seed-admin.username:}") String seedAdminUsername,
+                          @Value("${app.security.seed-admin.password:}") String seedAdminPassword) {
         this.permisoRepository = permisoRepository;
         this.rolRepository = rolRepository;
         this.personaRepository = personaRepository;
         this.passwordEncoder = passwordEncoder;
+        this.seedAdminUsername = seedAdminUsername;
+        this.seedAdminPassword = seedAdminPassword;
     }
 
     @Override
@@ -186,6 +193,7 @@ public class DataSeedRunner implements CommandLineRunner {
 
     private void seedAdminInicial() {
         if (personaRepository.count() > 0) return;
+        if (seedAdminUsername.isBlank() || seedAdminPassword.isBlank()) return;
         if (!rolRepository.existsByNombreIgnoreCase("ADMINISTRADOR")) return;
 
         Rol admin = rolRepository.findByNombreIgnoreCase("ADMINISTRADOR").orElse(null);
@@ -194,8 +202,8 @@ public class DataSeedRunner implements CommandLineRunner {
         Persona persona = Persona.builder()
                 .nombre("Administrador")
                 .apellido("Sistema")
-                .usuario("admin")
-                .password(passwordEncoder.encode("admin123"))
+                .usuario(seedAdminUsername)
+                .password(passwordEncoder.encode(seedAdminPassword))
                 .rol(admin)
                 .activa(true)
                 .build();
