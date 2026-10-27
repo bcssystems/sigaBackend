@@ -1,0 +1,20 @@
+package com.bcsystems.siga.service;
+
+import com.bcsystems.siga.dto.ReservaProductoResponse;
+
+import java.util.List;
+
+public interface ReservaProductoService {
+
+    void reservar(Integer idCaja, Integer idProducto, java.math.BigDecimal cantidad);
+
+    void quitarReserva(Integer idCaja, Integer idProducto);
+
+    void actualizarCantidad(Integer idCaja, Integer idProducto, java.math.BigDecimal cantidad);
+
+    void limpiarReservas(Integer idCaja);
+
+    List<ReservaProductoResponse> obtenerReservasPorSucursal(Integer idSucursal);
+
+    void limpiarExpiradas();
+}

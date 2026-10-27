@@ -1,0 +1,856 @@
+package com.bcsystems.siga.service.impl;
+
+import com.bcsystems.siga.domain.*;
+import com.bcsystems.siga.domain.en.*;
+import com.bcsystems.siga.dto.*;
+import com.bcsystems.siga.exception.InvalidEntryException;
+import com.bcsystems.siga.exception.NotFoundException;
+import com.bcsystems.siga.repository.*;
+import com.bcsystems.siga.service.AuditoriaService;
+import com.bcsystems.siga.service.VentaService;
+import com.bcsystems.siga.service.FinanzasService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
+
+@Service
+@RequiredArgsConstructor
+public class VentaServiceImpl implements VentaService {
+
+    private final VentaRepository ventaRepository;
+    private final VentaDetalleRepository ventaDetalleRepository;
+    private final CajaRepository cajaRepository;
+    private final ClienteRepository clienteRepository;
+    private final ProductoRepository productoRepository;
+    private final InventarioSucursalRepository inventarioSucursalRepository;
+    private final PersonaRepository personaRepository;
+    private final AuditoriaService auditoriaService;
+    private final VentaPagoRepository ventaPagoRepository;
+    private final TipoPagoRepository tipoPagoRepository;
+    private final CreditoRepository creditoRepository;
+    private final MovimientoCreditoRepository movimientoCreditoRepository;
+    private final ReservaProductoRepository reservaProductoRepository;
+    private final CarritoItemRapidoRepository carritoItemRapidoRepository;
+    private final PrecioClienteRepository precioClienteRepository;
+    private final MovimientoStockRepository movimientoStockRepository;
+    private final ClienteIneRepository clienteIneRepository;
+    private final FinanzasService finanzasService;
+
+    @Override
+    @Transactional
+    public VentaResponse crear(VentaRequest request) {
+        Caja caja = cajaRepository.findById(request.idCaja())
+                .orElseThrow(() -> new NotFoundException("Caja no encontrada"));
+        if (caja.getEstado() != CajaEstado.ABIERTA) {
+            throw new InvalidEntryException("La caja debe estar abierta");
+        }
+        if (caja.getTipo() == TipoCaja.CHICA || (caja.getTipo() != null && !TipoCaja.NORMAL.name().equals(caja.getTipo().name()))) {
+            throw new InvalidEntryException("La caja chica no puede registrar ventas");
+        }
+
+        Persona usuario = obtenerPersonaActual();
+        Cliente cliente = request.idCliente() != null
+                ? clienteRepository.findById(request.idCliente()).orElse(null) : null;
+
+        if (cliente != null && Boolean.TRUE.equals(cliente.getEnListaNegra())) {
+            throw new InvalidEntryException("El cliente está en lista negra y no puede realizar compras a crédito");
+        }
+
+        boolean enviandoPedido = Boolean.TRUE.equals(request.enviandoPedido());
+        if (enviandoPedido && !TipoVenta.CONTADO.name().equals(request.tipoVenta())) {
+            throw new InvalidEntryException("Una venta en envío de pedido solo puede ser de contado");
+        }
+        if (enviandoPedido && request.pagos() != null && !request.pagos().isEmpty()) {
+            throw new InvalidEntryException("Una venta en envío de pedido no puede registrar pagos al crearse");
+        }
+
+        Venta venta = Venta.builder()
+                .caja(caja)
+                .cliente(cliente)
+                .usuario(usuario)
+                .tipoVenta(TipoVenta.valueOf(request.tipoVenta()))
+                .precioSeleccionado(request.precioSeleccionado())
+                .subtotal(request.subtotal())
+                .descuento(request.descuento())
+                .total(request.total())
+                .nota(request.nota())
+                .folioPagare(generarFolioPagaré())
+                .estado(enviandoPedido ? EstadoVenta.ENVIANDO_PEDIDO : EstadoVenta.COMPLETADA)
+                .fecha(LocalDateTime.now())
+                .build();
+        venta = ventaRepository.save(venta);
+
+        Sucursal sucursal = caja.getSucursal();
+
+        List<VentaDetalle> detalles = new ArrayList<>();
+        double subtotalEfectivo = 0.0;
+        for (VentaDetalleRequest dto : request.detalles()) {
+            VentaDetalle detalle = VentaDetalle.builder()
+                    .venta(venta)
+                    .producto(dto.idProducto() != null
+                            ? productoRepository.findById(dto.idProducto()).orElse(null) : null)
+                    .descripcion(dto.descripcion())
+                    .cantidad(dto.cantidad())
+                    .precioUnitario(dto.precioUnitario())
+                    .subtotal(dto.subtotal())
+                    .atributosText(dto.atributosText())
+                    .build();
+
+            validarCantidadProducto(detalle.getProducto(), dto.cantidad());
+
+            if (detalle.getProducto() != null && cliente != null) {
+                Double precioEspecial = precioClienteRepository
+                        .findByClienteIdClienteAndProductoIdProducto(cliente.getIdCliente(), detalle.getProducto().getIdProducto())
+                        .map(PrecioCliente::getPrecio)
+                        .orElse(null);
+                if (precioEspecial != null && precioEspecial > 0) {
+                    detalle.setPrecioUnitario(precioEspecial);
+                    detalle.setSubtotal(java.math.BigDecimal.valueOf(precioEspecial)
+                            .multiply(detalle.getCantidad())
+                            .setScale(2, java.math.RoundingMode.HALF_UP).doubleValue());
+                    subtotalEfectivo += detalle.getSubtotal();
+                } else {
+                    subtotalEfectivo += dto.subtotal();
+                }
+            } else {
+                subtotalEfectivo += dto.subtotal();
+            }
+            detalles.add(ventaDetalleRepository.save(detalle));
+
+            if (dto.idProducto() != null && dto.idProducto() > 0) {
+                Producto p = detalle.getProducto();
+                ReservaProducto reserva = reservaProductoRepository
+                        .findByCajaIdCajaAndIdProducto(request.idCaja(), dto.idProducto())
+                        .orElseThrow(() -> new InvalidEntryException("El producto " + p.getNombre()
+                                + " no est\u00e1 reservado para esta caja. Agr\u00e9galo nuevamente al carrito."));
+                if (reserva.getExpiraEn().isBefore(LocalDateTime.now())) {
+                    throw new InvalidEntryException("La reserva del producto " + p.getNombre()
+                            + " ha expirado. Agr\u00e9galo nuevamente al carrito.");
+                }
+                if (reserva.getCantidad() == null
+                        || reserva.getCantidad().compareTo(dto.cantidad()) < 0) {
+                    throw new InvalidEntryException("La cantidad reservada de " + p.getNombre()
+                            + " es insuficiente (reservado: " + reserva.getCantidad()
+                            + ", solicitado: " + dto.cantidad() + ")");
+                }
+                InventarioSucursal inv = inventarioSucursalRepository
+                        .findByProductoIdProductoAndSucursalIdSucursal(dto.idProducto(), sucursal.getIdSucursal())
+                        .orElse(null);
+                java.math.BigDecimal stockInv = inv != null && inv.getStock() != null
+                        ? inv.getStock() : java.math.BigDecimal.ZERO;
+                if (inv != null && stockInv.compareTo(dto.cantidad()) < 0) {
+                    throw new InvalidEntryException("Stock insuficiente en " + sucursal.getNombre()
+                            + " para: " + p.getNombre() + " (disponible: " + stockInv
+                            + ", solicitado: " + dto.cantidad() + ")");
+                }
+                java.math.BigDecimal stockGlobal = p.getStockActual() != null
+                        ? p.getStockActual() : java.math.BigDecimal.ZERO;
+                p.setStockActual(stockGlobal.subtract(dto.cantidad())
+                        .setScale(2, java.math.RoundingMode.HALF_UP));
+                productoRepository.save(p);
+                if (inv != null) {
+                    inv.setStock(stockInv.subtract(dto.cantidad())
+                            .setScale(2, java.math.RoundingMode.HALF_UP));
+                    inventarioSucursalRepository.save(inv);
+
+                    movimientoStockRepository.save(MovimientoStock.builder()
+                            .producto(p)
+                            .sucursal(sucursal)
+                            .tipoMovimiento(TipoMovimiento.SALIDA)
+                            .cantidad(dto.cantidad())
+                            .stockAnterior(stockInv)
+                            .stockNuevo(inv.getStock())
+                            .referencia("Venta #" + venta.getIdVenta())
+                            .usuario(usuario.getUsuario())
+                            .observacion("Salida por venta")
+                            .build());
+                }
+            }
+        }
+
+        boolean esCredito = TipoVenta.CREDITO.name().equals(request.tipoVenta());
+        double sumaPagos = request.pagos() != null
+                ? request.pagos().stream().mapToDouble(VentaPagoRequest::monto).sum() : 0.0;
+        double montoCredito = esCredito
+                ? (request.montoCredito() != null ? request.montoCredito() : request.total() - sumaPagos)
+                : 0.0;
+
+        if (esCredito) {
+            if (montoCredito < -0.01 || Math.abs(sumaPagos + montoCredito - request.total()) > 0.01) {
+                throw new InvalidEntryException("La suma de pagos y crédito debe ser igual al total de la venta");
+            }
+        } else if (request.pagos() != null && !request.pagos().isEmpty() && sumaPagos + 0.01 < request.total()) {
+            throw new InvalidEntryException("La suma de los pagos ($" + String.format("%.2f", sumaPagos)
+                    + ") es menor al total de la venta ($" + String.format("%.2f", request.total()) + ")");
+        }
+
+        if (request.pagos() != null && !request.pagos().isEmpty()) {
+            for (VentaPagoRequest pagoReq : request.pagos()) {
+                TipoPago tipoPago = tipoPagoRepository.findById(pagoReq.idTipoPago())
+                        .orElseThrow(() -> new NotFoundException("Tipo de pago no encontrado"));
+                VentaPago pago = VentaPago.builder()
+                        .venta(venta)
+                        .tipoPago(tipoPago)
+                        .monto(pagoReq.monto())
+                        .referencia(pagoReq.referencia())
+                        .build();
+                ventaPagoRepository.save(pago);
+            }
+        }
+
+        if (esCredito) {
+            if (cliente == null) {
+                throw new InvalidEntryException("Se requiere un cliente para venta a credito");
+            }
+            if (cliente.getTieneCredito() == null || !cliente.getTieneCredito()) {
+                throw new InvalidEntryException("El cliente no tiene credito habilitado");
+            }
+            if (cliente.getLimiteCredito() != null && cliente.getLimiteCredito() > 0) {
+                double disponible = cliente.getLimiteCredito()
+                        - (cliente.getSaldoActual() != null ? cliente.getSaldoActual() : 0);
+                if (montoCredito > disponible) {
+                    throw new InvalidEntryException("El crédito ($" + String.format("%.2f", montoCredito)
+                            + ") excede el limite de credito disponible ($" + String.format("%.2f", disponible) + ")");
+                }
+            }
+
+            double porcentajeInteres = request.porcentajeInteres() != null ? request.porcentajeInteres() : 0;
+            double montoOriginal = montoCredito + (montoCredito * porcentajeInteres / 100);
+            int plazoMeses = request.plazoMeses() != null ? request.plazoMeses() : 1;
+
+            Credito credito = Credito.builder()
+                    .venta(venta)
+                    .folio(generarFolioPagaré())
+                    .cliente(cliente)
+                    .montoOriginal(montoOriginal)
+                    .saldoPendiente(montoOriginal)
+                    .plazoMeses(plazoMeses)
+                    .porcentajeInteres(porcentajeInteres)
+                    .fechaVencimiento(LocalDateTime.now().plusMonths(plazoMeses))
+                    .estado(EstadoCredito.ACTIVO)
+                    .fechaCreacion(LocalDateTime.now())
+                    .usuario(usuario)
+                    .build();
+            credito = creditoRepository.save(credito);
+
+            MovimientoCredito mov = MovimientoCredito.builder()
+                    .credito(credito)
+                    .tipo(TipoMovimientoCredito.CARGO)
+                    .monto(montoOriginal)
+                    .saldoAnterior(cliente.getSaldoActual() != null ? cliente.getSaldoActual() : 0)
+                    .saldoNuevo((cliente.getSaldoActual() != null ? cliente.getSaldoActual() : 0) + montoOriginal)
+                    .descripcion("Cargo por venta a credito #" + venta.getIdVenta())
+                    .fecha(LocalDateTime.now())
+                    .usuario(usuario)
+                    .build();
+            movimientoCreditoRepository.save(mov);
+
+            cliente.setSaldoActual((cliente.getSaldoActual() != null ? cliente.getSaldoActual() : 0) + montoOriginal);
+            clienteRepository.save(cliente);
+            if (!enviandoPedido && sumaPagos > 0) {
+                caja.setSaldoActual(caja.getSaldoActual() + sumaPagos);
+                cajaRepository.save(caja);
+            }
+        } else {
+            if (!enviandoPedido) {
+                caja.setSaldoActual(caja.getSaldoActual() + request.total());
+                cajaRepository.save(caja);
+            }
+        }
+
+        reservaProductoRepository.deleteByCajaIdCaja(request.idCaja());
+        carritoItemRapidoRepository.deleteByCajaIdCajaNative(request.idCaja());
+
+        auditoriaService.registrar("Venta", venta.getIdVenta(), AccionAuditoria.CREACION.name(),
+                usuario.getUsuario(), "Venta $" + request.total() + " - " + caja.getNombre());
+
+        return toResponse(venta, detalles);
+    }
+
+    @Override
+    public VentaResponse obtenerPorId(Integer id) {
+        Venta venta = ventaRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Venta no encontrada"));
+        List<VentaDetalle> detalles = ventaDetalleRepository.findByVentaIdVenta(id);
+        return toResponse(venta, detalles);
+    }
+
+    @Override
+    public List<VentaResponse> listarPorCaja(Integer idCaja) {
+        return ventaRepository.findByCajaIdCajaAndEstadoOrderByFechaDesc(idCaja, EstadoVenta.COMPLETADA)
+                .stream().map(v -> toResponse(v, ventaDetalleRepository.findByVentaIdVenta(v.getIdVenta())))
+                .toList();
+    }
+
+    @Override
+    public Page<VentaResponse> listar(Integer idSucursal, Integer idCaja, String estado,
+                                       LocalDateTime fechaInicio, LocalDateTime fechaFin, Pageable pageable) {
+        EstadoVenta estadoEnum = estado != null ? EstadoVenta.valueOf(estado) : null;
+        return ventaRepository.listarConFiltros(idSucursal, idCaja, estadoEnum, fechaInicio, fechaFin, pageable)
+                .map(v -> toResponse(v, ventaDetalleRepository.findByVentaIdVenta(v.getIdVenta())));
+    }
+
+    @Override
+    @Transactional
+    public VentaResponse solicitarCancelacion(Integer id, String motivo) {
+        Venta venta = ventaRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Venta no encontrada"));
+        if (venta.getEstado() != EstadoVenta.COMPLETADA
+                && venta.getEstado() != EstadoVenta.ENVIANDO_PEDIDO) {
+            throw new InvalidEntryException("Solo se pueden solicitar cancelaciones de ventas completadas o en envío de pedido");
+        }
+        Persona solicitante = obtenerPersonaActual();
+        if (motivo == null || motivo.isBlank()) {
+            throw new InvalidEntryException("Debe indicar un motivo de cancelacion");
+        }
+        venta.setEstado(EstadoVenta.SOLICITADA_CANCELACION);
+        venta.setMotivoCancelacion(motivo);
+        venta.setSolicitanteCancelacion(solicitante);
+        venta.setFechaSolicitudCancelacion(LocalDateTime.now());
+        venta = ventaRepository.save(venta);
+
+        auditoriaService.registrar("Venta", id, "ACTUALIZACION", solicitante.getUsuario(),
+                "Solicitud de cancelacion: " + motivo);
+
+        return toResponse(venta, ventaDetalleRepository.findByVentaIdVenta(id));
+    }
+
+    @Override
+    @Transactional
+    public CodigoAutorizacionResponse generarCodigo(Integer id) {
+        Venta venta = ventaRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Venta no encontrada"));
+        if (venta.getEstado() != EstadoVenta.SOLICITADA_CANCELACION) {
+            throw new InvalidEntryException("La venta no tiene una solicitud de cancelacion pendiente");
+        }
+        Persona admin = obtenerPersonaActual();
+        String codigo = String.format("%04d", ThreadLocalRandom.current().nextInt(10000));
+        venta.setCodigoAutorizacion(codigo);
+        venta.setFechaGeneracionCodigo(LocalDateTime.now());
+        venta.setGeneroAutorizacion(admin.getUsuario());
+        venta = ventaRepository.save(venta);
+
+        auditoriaService.registrar("Venta", id, "ACTUALIZACION", admin.getUsuario(),
+                "Codigo de autorizacion generado para la cancelacion de la Venta #" + id);
+
+        LocalDateTime generadoEn = venta.getFechaGeneracionCodigo();
+        return new CodigoAutorizacionResponse(id, codigo, generadoEn, generadoEn.plusMinutes(10));
+    }
+
+    @Override
+    @Transactional
+    public VentaResponse cancelar(Integer id, CancelarVentaRequest request) {
+        Venta venta = ventaRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Venta no encontrada"));
+
+        Persona autorizador = obtenerPersonaActual();
+        if (venta.getEstado() == EstadoVenta.CANCELADA) {
+            throw new InvalidEntryException("La venta ya está cancelada");
+        }
+        if (venta.getEstado() != EstadoVenta.SOLICITADA_CANCELACION) {
+            throw new InvalidEntryException("La venta no tiene una solicitud de cancelacion pendiente");
+        }
+
+        boolean tienePermiso = SecurityContextHolder.getContext().getAuthentication().getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("VENTAS_CANCELAR")
+                        || a.getAuthority().equals("CANCELACIONES_AUTORIZAR"));
+
+        if (!tienePermiso) {
+            if (request == null || request.codigo() == null || request.codigo().isBlank()) {
+                throw new InvalidEntryException("Ingresa el código de autorización del administrador");
+            }
+            if (venta.getFechaGeneracionCodigo() == null || venta.getCodigoAutorizacion() == null) {
+                throw new InvalidEntryException("No hay código generado. Pídele al administrador generarlo");
+            }
+            if (!request.codigo().trim().equals(venta.getCodigoAutorizacion())) {
+                throw new InvalidEntryException("Código de autorización inválido");
+            }
+            if (venta.getFechaGeneracionCodigo().plusMinutes(10).isBefore(LocalDateTime.now())) {
+                venta.setCodigoAutorizacion(null);
+                venta.setFechaGeneracionCodigo(null);
+                venta.setGeneroAutorizacion(null);
+                ventaRepository.save(venta);
+                throw new InvalidEntryException("El código de autorización expiró. Pide uno nuevo al administrador");
+            }
+        }
+
+        venta.setEstado(EstadoVenta.CANCELADA);
+        venta.setAutorizadorCancelacion(autorizador);
+        venta.setFechaAutorizacionCancelacion(LocalDateTime.now());
+        venta.setCodigoAutorizacion(null);
+        venta.setFechaGeneracionCodigo(null);
+        venta.setGeneroAutorizacion(null);
+        venta = ventaRepository.save(venta);
+
+        Sucursal sucursal = venta.getCaja().getSucursal();
+        List<VentaDetalle> detalles = ventaDetalleRepository.findByVentaIdVenta(id);
+        for (VentaDetalle d : detalles) {
+            if (d.getProducto() != null) {
+                Producto p = d.getProducto();
+                java.math.BigDecimal stockGlobal = p.getStockActual() != null
+                        ? p.getStockActual() : java.math.BigDecimal.ZERO;
+                p.setStockActual(stockGlobal.add(d.getCantidad())
+                        .setScale(2, java.math.RoundingMode.HALF_UP));
+                productoRepository.save(p);
+                InventarioSucursal inv = inventarioSucursalRepository
+                        .findByProductoIdProductoAndSucursalIdSucursal(p.getIdProducto(), sucursal.getIdSucursal())
+                        .orElse(null);
+                if (inv != null) {
+                    java.math.BigDecimal stockInv = inv.getStock() != null
+                            ? inv.getStock() : java.math.BigDecimal.ZERO;
+                    inv.setStock(stockInv.add(d.getCantidad())
+                            .setScale(2, java.math.RoundingMode.HALF_UP));
+                    inventarioSucursalRepository.save(inv);
+
+                    movimientoStockRepository.save(MovimientoStock.builder()
+                            .producto(p)
+                            .sucursal(sucursal)
+                            .tipoMovimiento(TipoMovimiento.ENTRADA)
+                            .cantidad(d.getCantidad())
+                            .stockAnterior(stockInv)
+                            .stockNuevo(inv.getStock())
+                            .referencia("Cancelacion Venta #" + id)
+                            .usuario(autorizador.getUsuario())
+                            .observacion("Devolucion por cancelacion de venta")
+                            .build());
+                }
+            }
+        }
+
+        if (venta.getTipoVenta() == TipoVenta.CONTADO) {
+            boolean tienePagos = !ventaPagoRepository.findByVentaIdVenta(id).isEmpty();
+            if (tienePagos) {
+                Caja caja = venta.getCaja();
+                caja.setSaldoActual(caja.getSaldoActual() - venta.getTotal());
+                cajaRepository.save(caja);
+            }
+        } else if (venta.getTipoVenta() == TipoVenta.CREDITO) {
+            creditoRepository.findByVentaIdVenta(id).ifPresent(credito -> {
+                if (credito.getEstado() == EstadoCredito.ACTIVO || credito.getEstado() == EstadoCredito.VENCIDO) {
+                    Cliente cliente = credito.getCliente();
+                    double reversar = Math.max(0, credito.getSaldoPendiente());
+                    cliente.setSaldoActual(Math.max(0, (cliente.getSaldoActual() != null ? cliente.getSaldoActual() : 0) - reversar));
+                    clienteRepository.save(cliente);
+                    credito.setEstado(EstadoCredito.CANCELADO);
+                    creditoRepository.save(credito);
+                }
+            });
+            double pagosRecibidos = ventaPagoRepository.findByVentaIdVenta(id).stream()
+                    .mapToDouble(VentaPago::getMonto).sum();
+        if (pagosRecibidos > 0) {
+                Caja caja = venta.getCaja();
+                caja.setSaldoActual(caja.getSaldoActual() - pagosRecibidos);
+                cajaRepository.save(caja);
+            }
+        }
+
+        finanzasService.registrarCancelacionVenta(id, venta.getCaja().getSucursal().getIdSucursal());
+
+        auditoriaService.registrar("Venta", id, "ACTUALIZACION", autorizador.getUsuario(),
+                "Cancelacion autorizada - Venta #" + id);
+
+        return toResponse(venta, detalles);
+    }
+
+    @Override
+    @Transactional
+    public VentaResponse rechazarCancelacion(Integer id) {
+        Venta venta = ventaRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Venta no encontrada"));
+        if (venta.getEstado() != EstadoVenta.SOLICITADA_CANCELACION) {
+            throw new InvalidEntryException("La venta no tiene una solicitud de cancelacion pendiente");
+        }
+        Persona rechazador = obtenerPersonaActual();
+        venta.setEstado(EstadoVenta.COMPLETADA);
+        venta.setMotivoCancelacion(null);
+        venta.setSolicitanteCancelacion(null);
+        venta.setFechaSolicitudCancelacion(null);
+        venta.setAutorizadorCancelacion(null);
+        venta.setFechaAutorizacionCancelacion(null);
+        venta = ventaRepository.save(venta);
+
+        auditoriaService.registrar("Venta", id, "ACTUALIZACION", rechazador.getUsuario(),
+                "Solicitud de cancelacion rechazada - Venta #" + id);
+
+        return toResponse(venta, ventaDetalleRepository.findByVentaIdVenta(id));
+    }
+
+    @Override
+    @Transactional
+    public VentaResponse ponerEnEspera(Integer id) {
+        Venta venta = ventaRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Venta no encontrada"));
+        venta.setEstado(EstadoVenta.ESPERA);
+        venta = ventaRepository.save(venta);
+        return toResponse(venta, ventaDetalleRepository.findByVentaIdVenta(id));
+    }
+
+    @Override
+    @Transactional
+    public VentaResponse actualizarEspera(Integer id, VentaEsperaRequest request) {
+        Venta venta = ventaRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Venta no encontrada"));
+        if (venta.getEstado() != EstadoVenta.ESPERA) {
+            throw new InvalidEntryException("La venta no está en espera");
+        }
+
+        Persona usuario = obtenerPersonaActual();
+        Sucursal sucursal = venta.getCaja().getSucursal();
+        Cliente cliente = request.idCliente() != null
+                ? clienteRepository.findById(request.idCliente()).orElse(null) : null;
+
+        List<VentaDetalle> viejos = ventaDetalleRepository.findByVentaIdVenta(id);
+
+        for (VentaDetalle d : viejos) {
+            if (d.getProducto() != null) {
+                restituirStock(d.getProducto(), d.getCantidad(), sucursal, usuario,
+                        id, "Devolución por edición de venta en espera");
+            }
+        }
+        ventaDetalleRepository.deleteAll(viejos);
+
+        List<VentaDetalle> nuevos = new ArrayList<>();
+        for (VentaDetalleRequest dto : request.detalles()) {
+            VentaDetalle detalle = VentaDetalle.builder()
+                    .venta(venta)
+                    .producto(dto.idProducto() != null
+                            ? productoRepository.findById(dto.idProducto()).orElse(null) : null)
+                    .descripcion(dto.descripcion())
+                    .cantidad(dto.cantidad())
+                    .precioUnitario(dto.precioUnitario())
+                    .subtotal(dto.subtotal())
+                    .atributosText(dto.atributosText())
+                    .build();
+            validarCantidadProducto(detalle.getProducto(), dto.cantidad());
+            if (detalle.getProducto() != null) {
+                descontarStock(detalle.getProducto(), dto.cantidad(), sucursal, usuario, id);
+            }
+            nuevos.add(ventaDetalleRepository.save(detalle));
+        }
+
+        venta.setCliente(cliente);
+        venta.setSubtotal(request.subtotal());
+        venta.setDescuento(request.descuento());
+        venta.setTotal(request.total());
+        venta.setNota(request.nota());
+        venta = ventaRepository.save(venta);
+
+        return toResponse(venta, nuevos);
+    }
+
+    private void descontarStock(Producto p, java.math.BigDecimal cantidad, Sucursal sucursal,
+                                Persona usuario, Integer idVenta) {
+        InventarioSucursal inv = inventarioSucursalRepository
+                .findByProductoIdProductoAndSucursalIdSucursal(p.getIdProducto(), sucursal.getIdSucursal())
+                .orElse(null);
+        java.math.BigDecimal stockInv = inv != null && inv.getStock() != null
+                ? inv.getStock() : java.math.BigDecimal.ZERO;
+        if (inv != null && stockInv.compareTo(cantidad) < 0) {
+            throw new InvalidEntryException("Stock insuficiente en " + sucursal.getNombre()
+                    + " para: " + p.getNombre() + " (disponible: " + stockInv
+                    + ", solicitado: " + cantidad + ")");
+        }
+        java.math.BigDecimal stockGlobal = p.getStockActual() != null
+                ? p.getStockActual() : java.math.BigDecimal.ZERO;
+        p.setStockActual(stockGlobal.subtract(cantidad).setScale(2, java.math.RoundingMode.HALF_UP));
+        productoRepository.save(p);
+        if (inv != null) {
+            inv.setStock(stockInv.subtract(cantidad).setScale(2, java.math.RoundingMode.HALF_UP));
+            inventarioSucursalRepository.save(inv);
+
+            movimientoStockRepository.save(MovimientoStock.builder()
+                    .producto(p)
+                    .sucursal(sucursal)
+                    .tipoMovimiento(TipoMovimiento.SALIDA)
+                    .cantidad(cantidad)
+                    .stockAnterior(stockInv)
+                    .stockNuevo(inv.getStock())
+                    .referencia("Venta en Espera #" + idVenta)
+                    .usuario(usuario.getUsuario())
+                    .observacion("Salida por venta en espera")
+                    .build());
+        }
+    }
+
+    private void restituirStock(Producto p, java.math.BigDecimal cantidad, Sucursal sucursal,
+                                Persona usuario, Integer idVenta, String observacion) {
+        java.math.BigDecimal stockGlobal = p.getStockActual() != null
+                ? p.getStockActual() : java.math.BigDecimal.ZERO;
+        p.setStockActual(stockGlobal.add(cantidad).setScale(2, java.math.RoundingMode.HALF_UP));
+        productoRepository.save(p);
+        InventarioSucursal inv = inventarioSucursalRepository
+                .findByProductoIdProductoAndSucursalIdSucursal(p.getIdProducto(), sucursal.getIdSucursal())
+                .orElse(null);
+        if (inv != null) {
+            java.math.BigDecimal stockInv = inv.getStock() != null
+                    ? inv.getStock() : java.math.BigDecimal.ZERO;
+            inv.setStock(stockInv.add(cantidad).setScale(2, java.math.RoundingMode.HALF_UP));
+            inventarioSucursalRepository.save(inv);
+
+            movimientoStockRepository.save(MovimientoStock.builder()
+                    .producto(p)
+                    .sucursal(sucursal)
+                    .tipoMovimiento(TipoMovimiento.ENTRADA)
+                    .cantidad(cantidad)
+                    .stockAnterior(stockInv)
+                    .stockNuevo(inv.getStock())
+                    .referencia("Venta en Espera #" + idVenta)
+                    .usuario(usuario.getUsuario())
+                    .observacion(observacion)
+                    .build());
+        }
+    }
+
+    @Override
+    @Transactional
+    public VentaResponse reanudar(Integer id) {
+        Venta venta = ventaRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Venta no encontrada"));
+        if (venta.getEstado() != EstadoVenta.ESPERA) {
+            throw new InvalidEntryException("La venta no está en espera");
+        }
+        venta.setEstado(EstadoVenta.COMPLETADA);
+        venta = ventaRepository.save(venta);
+        return toResponse(venta, ventaDetalleRepository.findByVentaIdVenta(id));
+    }
+
+    @Override
+    @Transactional
+    public VentaResponse cancelarEspera(Integer id) {
+        Venta venta = ventaRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Venta no encontrada"));
+        if (venta.getEstado() != EstadoVenta.ESPERA) {
+            throw new InvalidEntryException("La venta no está en espera");
+        }
+        Persona usuario = obtenerPersonaActual();
+        venta.setEstado(EstadoVenta.CANCELADA);
+        venta = ventaRepository.save(venta);
+
+        Sucursal sucursal = venta.getCaja().getSucursal();
+        List<VentaDetalle> detalles = ventaDetalleRepository.findByVentaIdVenta(id);
+        for (VentaDetalle d : detalles) {
+            if (d.getProducto() != null) {
+                Producto p = d.getProducto();
+                java.math.BigDecimal stockGlobalEspera = p.getStockActual() != null
+                        ? p.getStockActual() : java.math.BigDecimal.ZERO;
+                p.setStockActual(stockGlobalEspera.add(d.getCantidad())
+                        .setScale(2, java.math.RoundingMode.HALF_UP));
+                productoRepository.save(p);
+                InventarioSucursal inv = inventarioSucursalRepository
+                        .findByProductoIdProductoAndSucursalIdSucursal(p.getIdProducto(), sucursal.getIdSucursal())
+                        .orElse(null);
+                if (inv != null) {
+                    java.math.BigDecimal stockInv = inv.getStock() != null
+                            ? inv.getStock() : java.math.BigDecimal.ZERO;
+                    inv.setStock(stockInv.add(d.getCantidad())
+                            .setScale(2, java.math.RoundingMode.HALF_UP));
+                    inventarioSucursalRepository.save(inv);
+
+                    movimientoStockRepository.save(MovimientoStock.builder()
+                            .producto(p)
+                            .sucursal(sucursal)
+                            .tipoMovimiento(TipoMovimiento.ENTRADA)
+                            .cantidad(d.getCantidad())
+                            .stockAnterior(stockInv)
+                            .stockNuevo(inv.getStock())
+                            .referencia("Recuperacion Venta en Espera #" + id)
+                            .usuario(usuario.getUsuario())
+                            .observacion("Devolucion por recuperacion de venta en espera")
+                            .build());
+                }
+            }
+        }
+
+        auditoriaService.registrar("Venta", id, "ACTUALIZACION", usuario.getUsuario(),
+                "Recuperacion de venta en espera - Venta #" + id);
+
+        return toResponse(venta, detalles);
+    }
+
+    @Override
+    public List<VentaResponse> ventasEnEspera(Integer idCaja) {
+        return ventaRepository.findByCajaIdCajaAndEstadoInOrderByFechaDesc(
+                        idCaja, List.of(EstadoVenta.ESPERA, EstadoVenta.ENVIANDO_PEDIDO))
+                .stream().map(v -> toResponse(v, ventaDetalleRepository.findByVentaIdVenta(v.getIdVenta())))
+                .toList();
+    }
+
+    @Override
+    public List<VentaResponse> listarPorSucursal(Integer idSucursal) {
+        return ventaRepository.findByCajaSucursalIdSucursalAndEstadoInOrderByFechaDesc(
+                        idSucursal,
+                        List.of(EstadoVenta.COMPLETADA, EstadoVenta.ENVIANDO_PEDIDO, EstadoVenta.CANCELADA))
+                .stream().limit(50)
+                .map(v -> toResponse(v, ventaDetalleRepository.findByVentaIdVenta(v.getIdVenta())))
+                .toList();
+    }
+
+    @Override
+    @Transactional
+    public VentaResponse registrarPago(Integer id, List<VentaPagoRequest> pagos) {
+        Venta venta = ventaRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Venta no encontrada"));
+        if (venta.getEstado() != EstadoVenta.ENVIANDO_PEDIDO) {
+            throw new InvalidEntryException("La venta no está como envío de pedido");
+        }
+        if (venta.getTipoVenta() != TipoVenta.CONTADO) {
+            throw new InvalidEntryException("Una venta en envío de pedido solo puede ser de contado");
+        }
+        if (pagos == null || pagos.isEmpty()) {
+            throw new InvalidEntryException("Debe indicar al menos una forma de pago");
+        }
+        double sumaPagos = pagos.stream().mapToDouble(VentaPagoRequest::monto).sum();
+        if (sumaPagos + 0.01 < venta.getTotal()) {
+            throw new InvalidEntryException("La suma de los pagos ($" + String.format("%.2f", sumaPagos)
+                    + ") es menor al total de la venta ($" + String.format("%.2f", venta.getTotal()) + ")");
+        }
+        for (VentaPagoRequest pagoReq : pagos) {
+            TipoPago tipoPago = tipoPagoRepository.findById(pagoReq.idTipoPago())
+                    .orElseThrow(() -> new NotFoundException("Tipo de pago no encontrado"));
+            VentaPago pago = VentaPago.builder()
+                    .venta(venta)
+                    .tipoPago(tipoPago)
+                    .monto(pagoReq.monto())
+                    .referencia(pagoReq.referencia())
+                    .build();
+            ventaPagoRepository.save(pago);
+        }
+        venta.setEstado(EstadoVenta.COMPLETADA);
+        ventaRepository.save(venta);
+
+        Persona usuario = obtenerPersonaActual();
+        Caja caja = venta.getCaja();
+        caja.setSaldoActual(caja.getSaldoActual() + venta.getTotal());
+        cajaRepository.save(caja);
+
+        auditoriaService.registrar("Venta", id, AccionAuditoria.ACTUALIZACION.name(),
+                usuario.getUsuario(), "Pago registrado - Venta #" + id);
+
+        return toResponse(venta, ventaDetalleRepository.findByVentaIdVenta(id));
+    }
+
+    @Override
+    @Transactional
+    public VentaResponse ventaRapida(Integer idCaja, String descripcion, Double precioCompra,
+                                      Double precioVenta, java.math.BigDecimal cantidad, Integer idCliente) {
+        Caja caja = cajaRepository.findById(idCaja)
+                .orElseThrow(() -> new NotFoundException("Caja no encontrada"));
+        if (caja.getEstado() != CajaEstado.ABIERTA) {
+            throw new InvalidEntryException("La caja debe estar abierta");
+        }
+        if (caja.getTipo() == TipoCaja.CHICA || (caja.getTipo() != null && !TipoCaja.NORMAL.name().equals(caja.getTipo().name()))) {
+            throw new InvalidEntryException("La caja chica no puede registrar ventas");
+        }
+
+        Persona usuario = obtenerPersonaActual();
+        Cliente cliente = idCliente != null
+                ? clienteRepository.findById(idCliente).orElse(null) : null;
+
+        Double subtotal = java.math.BigDecimal.valueOf(precioVenta != null ? precioVenta : 0.0)
+                .multiply(cantidad)
+                .setScale(2, java.math.RoundingMode.HALF_UP).doubleValue();
+
+        Venta venta = Venta.builder()
+                .caja(caja)
+                .cliente(cliente)
+                .usuario(usuario)
+                .tipoVenta(TipoVenta.CONTADO)
+                .precioSeleccionado(1)
+                .subtotal(subtotal)
+                .descuento(0.0)
+                .total(subtotal)
+                .estado(EstadoVenta.COMPLETADA)
+                .fecha(LocalDateTime.now())
+                .build();
+        venta = ventaRepository.save(venta);
+
+        VentaDetalle detalle = VentaDetalle.builder()
+                .venta(venta)
+                .descripcion(descripcion)
+                .cantidad(cantidad)
+                .precioUnitario(precioVenta)
+                .subtotal(subtotal)
+                .build();
+        ventaDetalleRepository.save(detalle);
+
+        caja.setSaldoActual(caja.getSaldoActual() + subtotal);
+        cajaRepository.save(caja);
+
+        return toResponse(venta, List.of(detalle));
+    }
+
+    private void validarCantidadProducto(Producto producto, java.math.BigDecimal cantidad) {
+        // Las cantidades de todos los productos admiten valores decimales.
+    }
+
+    private Persona obtenerPersonaActual() {
+        String username = SecurityContextHolder.getContext().getAuthentication().getName();
+        return personaRepository.findByUsuario(username)
+                .orElseThrow(() -> new NotFoundException("Usuario no encontrado"));
+    }
+
+    private String generarFolioPagaré() {
+        String prefix = "PAGARE-";
+        int num = 1;
+        while (creditoRepository.existsByFolio(prefix + String.format("%05d", num))
+                || ventaRepository.existsByFolioPagare(prefix + String.format("%05d", num))) {
+            num++;
+        }
+        return prefix + String.format("%05d", num);
+    }
+
+    private VentaResponse toResponse(Venta v, List<VentaDetalle> detalles) {
+        List<VentaDetalleResponse> detalleResponses = detalles.stream()
+                .map(d -> new VentaDetalleResponse(
+                        d.getIdVentaDetalle(),
+                        d.getProducto() != null ? d.getProducto().getIdProducto() : null,
+                        d.getProducto() != null ? d.getProducto().getSku() : null,
+                        d.getProducto() != null ? d.getProducto().getNombre() : null,
+                        d.getDescripcion(),
+                        d.getCantidad(),
+                        d.getProducto() != null ? d.getProducto().getUnidadMedida() : null,
+                        d.getPrecioUnitario(), d.getSubtotal(),
+                        d.getAtributosText()))
+                .toList();
+
+        List<VentaPagoResponse> pagoResponses = ventaPagoRepository.findByVentaIdVenta(v.getIdVenta())
+                .stream().map(p -> new VentaPagoResponse(
+                        p.getIdVentaPago(),
+                        p.getTipoPago().getIdTipoPago(),
+                        p.getTipoPago().getNombre(),
+                        p.getMonto(),
+                        p.getReferencia()))
+                .toList();
+
+        Credito credito = creditoRepository.findByVentaIdVenta(v.getIdVenta()).orElse(null);
+
+        return new VentaResponse(
+                v.getIdVenta(), v.getCaja().getIdCaja(),
+                v.getCaja().getNombre(),
+                v.getCaja().getSucursal().getIdSucursal(),
+                v.getCaja().getSucursal().getNombre(),
+                v.getCliente() != null ? v.getCliente().getIdCliente() : null,
+                v.getCliente() != null ? v.getCliente().getNombre() + " " + v.getCliente().getApellidoPaterno() : null,
+                v.getUsuario().getUsuario(),
+                v.getTipoVenta().name(), v.getPrecioSeleccionado(),
+                v.getSubtotal(), v.getDescuento(), v.getTotal(),
+                v.getEstado().name(), v.getNota(), v.getFecha(), detalleResponses, pagoResponses,
+                credito != null && v.getFolioPagare() == null ? credito.getFolio() : v.getFolioPagare(),
+                credito != null ? credito.getPlazoMeses() : null,
+                credito != null ? credito.getPorcentajeInteres() : null,
+                v.getMotivoCancelacion(),
+                v.getSolicitanteCancelacion() != null ? v.getSolicitanteCancelacion().getUsuario() : null,
+                v.getFechaSolicitudCancelacion(),
+                v.getAutorizadorCancelacion() != null ? v.getAutorizadorCancelacion().getUsuario() : null,
+                v.getFechaAutorizacionCancelacion(),
+                v.getFechaGeneracionCodigo() != null);
+    }
+}
