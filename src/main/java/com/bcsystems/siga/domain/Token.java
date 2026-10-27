@@ -19,10 +19,16 @@ public class Token {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Integer idToken;
 
-    @Column(unique = true, columnDefinition = "TEXT")
+    @Column(unique = true, length = 64)
+    private String tokenHash;
+
+    @Transient
     private String token;
 
-    @Column(columnDefinition = "TEXT")
+    @Column(unique = true, length = 64)
+    private String refreshTokenHash;
+
+    @Transient
     private String refreshToken;
 
     private Boolean isRevoked;

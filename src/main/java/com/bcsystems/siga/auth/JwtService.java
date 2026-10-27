@@ -14,6 +14,9 @@ import javax.crypto.SecretKey;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 @Service
 public class JwtService {
@@ -42,8 +45,8 @@ public class JwtService {
         claims.put("rol", persona.getRol().getNombre());
         claims.put("permisos", new ArrayList<>(getAllPermissions(persona)));
 
-        String accessToken = buildToken(claims, persona.getUsuario(), jwtExpiration);
-        String refreshToken = buildToken(new HashMap<>(), persona.getUsuario(), refreshExpiration);
+        String accessToken = buildToken(claims, persona.getUsuario(), jwtExpiration, "access");
+        String refreshToken = buildToken(new HashMap<>(), persona.getUsuario(), refreshExpiration, "refresh");
 
         return Token.builder()
                 .token(accessToken)
@@ -53,6 +56,18 @@ public class JwtService {
                 .isExpired(false)
                 .persona(persona)
                 .build();
+    }
+
+    public String hashToken(String token) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(token.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte value : digest) result.append(String.format("%02x", value));
+            return result.toString();
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 no está disponible", ex);
+        }
     }
 
     private Set<String> getAllPermissions(Persona persona) {
@@ -75,9 +90,14 @@ public class JwtService {
         return permisos != null ? new LinkedHashSet<>(permisos) : new LinkedHashSet<>();
     }
 
-    private String buildToken(Map<String, Object> extraClaims, String username, long expiration) {
+    public String tokenType(String token) {
+        return extractClaim(token, claims -> claims.get("token_type", String.class));
+    }
+
+    private String buildToken(Map<String, Object> extraClaims, String username, long expiration, String tokenType) {
         return Jwts.builder()
                 .claims(extraClaims)
+                .claim("token_type", tokenType)
                 .subject(username)
                 .issuedAt(new Date(System.currentTimeMillis()))
                 .expiration(new Date(System.currentTimeMillis() + expiration))

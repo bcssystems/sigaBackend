@@ -42,7 +42,7 @@ public class AuthService {
     }
 
     @Transactional
-    public AuthResponse register(RegisterRequest request) {
+    public AuthSession register(RegisterRequest request) {
         if (personaRepository.existsByUsuarioIgnoreCase(request.usuario())) {
             throw new InvalidEntryException("El usuario ya existe");
         }
@@ -70,13 +70,13 @@ public class AuthService {
         persona = personaRepository.save(persona);
 
         Token token = jwtService.generateToken(persona);
-        tokenRepository.save(token);
+        AuthSession session = prepararToken(token, persona);
 
-        return buildAuthResponse(token, persona);
+        return session;
     }
 
     @Transactional
-    public AuthResponse login(LoginRequest request) {
+    public AuthSession login(LoginRequest request) {
         authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(
                         request.usuario(), request.password()
@@ -89,24 +89,34 @@ public class AuthService {
         revokeAllTokens(persona);
 
         Token token = jwtService.generateToken(persona);
-        tokenRepository.save(token);
+        AuthSession session = prepararToken(token, persona);
 
-        return buildAuthResponse(token, persona);
+        return session;
     }
 
     @Transactional
-    public AuthResponse refreshToken(String authHeader) {
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+    public AuthSession refreshToken(String refreshToken) {
+        if (refreshToken == null || refreshToken.isBlank()) {
             throw new InvalidEntryException("Token de refresco inválido");
         }
 
-        final String refreshToken = authHeader.substring(7);
-        final String username = jwtService.extractUsername(refreshToken);
+        final String username;
+        try {
+            username = jwtService.extractUsername(refreshToken);
+            if (!"refresh".equals(jwtService.tokenType(refreshToken))) {
+                throw new InvalidEntryException("Token de refresco inválido");
+            }
+        } catch (Exception ex) {
+            throw new InvalidEntryException("Token de refresco inválido");
+        }
 
         Persona persona = personaRepository.findByUsuarioIgnoreCase(username)
                 .orElseThrow(() -> new InvalidEntryException("Usuario no encontrado"));
+        if (!Boolean.TRUE.equals(persona.getActiva())) {
+            throw new InvalidEntryException("Usuario inactivo");
+        }
 
-        var storedToken = tokenRepository.findByRefreshToken(refreshToken).orElse(null);
+        var storedToken = tokenRepository.findByRefreshTokenHash(jwtService.hashToken(refreshToken)).orElse(null);
         if (storedToken == null || storedToken.getIsRevoked() || storedToken.getIsExpired()) {
             throw new InvalidEntryException("Token de refresco inválido o expirado");
         }
@@ -117,24 +127,29 @@ public class AuthService {
             throw new InvalidEntryException("Token de refresco expirado");
         }
 
+        if (tokenRepository.consumeRefreshToken(storedToken.getIdToken()) == 0) {
+            throw new InvalidEntryException("Token de refresco reutilizado");
+        }
+
         revokeAllTokens(persona);
 
         Token newToken = jwtService.generateToken(persona);
-        tokenRepository.save(newToken);
+        AuthSession session = prepararToken(newToken, persona);
 
-        return buildAuthResponse(newToken, persona);
+        return session;
     }
 
     @Transactional
-    public void logout(String authHeader) {
-        if (authHeader != null && authHeader.startsWith("Bearer ")) {
-            final String token = authHeader.substring(7);
-            var storedToken = tokenRepository.findByToken(token).orElse(null);
-            if (storedToken != null) {
-                storedToken.setIsRevoked(true);
-                storedToken.setIsExpired(true);
-                tokenRepository.save(storedToken);
-            }
+    public void logout(String accessToken, String refreshToken) {
+        var storedToken = refreshToken == null ? null
+                : tokenRepository.findByRefreshTokenHash(jwtService.hashToken(refreshToken)).orElse(null);
+        if (storedToken == null && accessToken != null) {
+            storedToken = tokenRepository.findByTokenHash(jwtService.hashToken(accessToken)).orElse(null);
+        }
+        if (storedToken != null) {
+            storedToken.setIsRevoked(true);
+            storedToken.setIsExpired(true);
+            tokenRepository.save(storedToken);
         }
     }
 
@@ -153,12 +168,33 @@ public class AuthService {
                 .anyMatch(a -> a.getAuthority().equals(permiso));
     }
 
-    private AuthResponse buildAuthResponse(Token token, Persona persona) {
-        var permisos = jwtService.extractPermissions(token.getToken());
+    private AuthSession prepararToken(Token token, Persona persona) {
+        String accessToken = token.getToken();
+        String refreshToken = token.getRefreshToken();
+        token.setTokenHash(jwtService.hashToken(accessToken));
+        token.setRefreshTokenHash(jwtService.hashToken(refreshToken));
+        token.setToken(null);
+        token.setRefreshToken(null);
+        tokenRepository.save(token);
+        return new AuthSession(buildAuthResponse(persona), accessToken, refreshToken);
+    }
 
+    public AuthResponse sesion(String usuario) {
+        Persona persona = personaRepository.findByUsuarioIgnoreCase(usuario)
+                .orElseThrow(() -> new InvalidEntryException("Usuario no encontrado"));
+        return buildAuthResponse(persona);
+    }
+
+    private AuthResponse buildAuthResponse(Persona persona) {
+        var permisos = persona.getRol().getPermisos().stream()
+                .map(com.bcsystems.siga.domain.Permiso::getClave)
+                .collect(Collectors.toSet());
+        if (persona.getPermisosAdicionales() != null) {
+            persona.getPermisosAdicionales().stream()
+                    .map(pa -> pa.getPermiso().getClave())
+                    .forEach(permisos::add);
+        }
         return new AuthResponse(
-                token.getToken(),
-                token.getRefreshToken(),
                 persona.getUsuario(),
                 persona.getNombre() + " " + persona.getApellido(),
                 persona.getRol().getNombre(),
