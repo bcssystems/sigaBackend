@@ -11,6 +11,7 @@ import com.bcsystems.siga.dto.RolResponse;
 import com.bcsystems.siga.exception.InvalidEntryException;
 import com.bcsystems.siga.exception.NotFoundException;
 import com.bcsystems.siga.repository.PermisoAdicionalRepository;
+import com.bcsystems.siga.repository.TokenRepository;
 import com.bcsystems.siga.repository.PermisoRepository;
 import com.bcsystems.siga.repository.PersonaRepository;
 import com.bcsystems.siga.repository.RolRepository;
@@ -37,19 +38,22 @@ public class PersonaServiceImpl implements PersonaService {
     private final RolRepository rolRepository;
     private final PermisoRepository permisoRepository;
     private final PermisoAdicionalRepository permisoAdicionalRepository;
+    private final TokenRepository tokenRepository;
 
     public PersonaServiceImpl(PersonaRepository personaRepository,
                                PasswordEncoder passwordEncoder,
                                AuditoriaService auditoriaService,
                                RolRepository rolRepository,
                                PermisoRepository permisoRepository,
-                               PermisoAdicionalRepository permisoAdicionalRepository) {
+                               PermisoAdicionalRepository permisoAdicionalRepository,
+                               TokenRepository tokenRepository) {
         this.personaRepository = personaRepository;
         this.passwordEncoder = passwordEncoder;
         this.auditoriaService = auditoriaService;
         this.rolRepository = rolRepository;
         this.permisoRepository = permisoRepository;
         this.permisoAdicionalRepository = permisoAdicionalRepository;
+        this.tokenRepository = tokenRepository;
     }
 
     @Override
@@ -124,6 +128,11 @@ public class PersonaServiceImpl implements PersonaService {
             throw new InvalidEntryException("El rol seleccionado está inactivo");
         }
 
+        boolean securityChanged = !persona.getUsuario().equalsIgnoreCase(request.usuario())
+                || !persona.getRol().getIdRol().equals(request.idRol())
+                || (request.activa() != null && !request.activa().equals(persona.getActiva()))
+                || (request.password() != null && !request.password().isBlank());
+
         persona.setNombre(request.nombre());
         persona.setApellido(request.apellido());
         persona.setUsuario(request.usuario());
@@ -134,6 +143,7 @@ public class PersonaServiceImpl implements PersonaService {
         if (request.activa() != null) persona.setActiva(request.activa());
 
         personaRepository.save(persona);
+        if (securityChanged) tokenRepository.revokeAllByPersonaId(persona.getIdPersona());
 
         permisoAdicionalRepository.deleteByPersonaIdPersona(id);
         if (request.permisosAdicionales() != null && !request.permisosAdicionales().isEmpty()) {

@@ -23,4 +23,9 @@ public interface TokenRepository extends JpaRepository<Token, Integer> {
     @Query("UPDATE Token t SET t.isRevoked = true, t.isExpired = true "
             + "WHERE t.idToken = :id AND t.isRevoked = false AND t.isExpired = false")
     int consumeRefreshToken(@Param("id") Integer id);
+
+    @Modifying
+    @Query("UPDATE Token t SET t.isRevoked = true, t.isExpired = true "
+            + "WHERE t.persona.idPersona = :personaId AND t.isRevoked = false AND t.isExpired = false")
+    int revokeAllByPersonaId(@Param("personaId") Integer personaId);
 }
