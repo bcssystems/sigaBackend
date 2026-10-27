@@ -14,11 +14,14 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.stream.Collectors;
 
 @Service
 public class AuthService {
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
     private final PersonaRepository personaRepository;
     private final TokenRepository tokenRepository;
@@ -103,7 +106,7 @@ public class AuthService {
         final String username;
         try {
             username = jwtService.extractUsername(refreshToken);
-            if (!"refresh".equals(jwtService.tokenType(refreshToken))) {
+            if (!jwtService.belongsToSiga(refreshToken) || !"refresh".equals(jwtService.tokenType(refreshToken))) {
                 throw new InvalidEntryException("Token de refresco inválido");
             }
         } catch (Exception ex) {
@@ -117,8 +120,15 @@ public class AuthService {
         }
 
         var storedToken = tokenRepository.findByRefreshTokenHash(jwtService.hashToken(refreshToken)).orElse(null);
-        if (storedToken == null || storedToken.getIsRevoked() || storedToken.getIsExpired()) {
+        if (storedToken == null) {
             throw new InvalidEntryException("Token de refresco inválido o expirado");
+        }
+        if (storedToken.getIsRevoked() || storedToken.getIsExpired()) {
+            if (storedToken.getSessionFamily() != null) {
+                tokenRepository.revokeAllBySessionFamily(storedToken.getSessionFamily());
+            }
+            log.warn("Se detectó reutilización de refresh token para el usuario {}", username);
+            throw new InvalidEntryException("Token de refresco reutilizado");
         }
 
         if (jwtService.isTokenExpired(refreshToken)) {
@@ -133,7 +143,7 @@ public class AuthService {
 
         revokeAllTokens(persona);
 
-        Token newToken = jwtService.generateToken(persona);
+        Token newToken = jwtService.generateToken(persona, storedToken.getSessionFamily());
         AuthSession session = prepararToken(newToken, persona);
 
         return session;

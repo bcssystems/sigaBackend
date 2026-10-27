@@ -79,7 +79,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
-        if (!"access".equals(jwtService.tokenType(jwt)) || !jwtService.isTokenValid(jwt, persona)) {
+        if (!jwtService.belongsToSiga(jwt) || !"access".equals(jwtService.tokenType(jwt))
+                || !jwtService.isTokenValid(jwt, persona)) {
             writeError(response, HttpServletResponse.SC_UNAUTHORIZED, "token_expired", "Token has expired");
             return;
         }

@@ -31,6 +31,9 @@ public class Token {
     @Transient
     private String refreshToken;
 
+    @Column(length = 36)
+    private String sessionFamily;
+
     private Boolean isRevoked;
     private Boolean isExpired;
 

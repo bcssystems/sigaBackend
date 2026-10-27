@@ -40,13 +40,20 @@ public class JwtService {
     }
 
     public Token generateToken(Persona persona) {
+        return generateToken(persona, UUID.randomUUID().toString());
+    }
+
+    public Token generateToken(Persona persona, String sessionFamily) {
         Map<String, Object> claims = new HashMap<>();
         claims.put("name", persona.getNombre() + " " + persona.getApellido());
         claims.put("rol", persona.getRol().getNombre());
         claims.put("permisos", new ArrayList<>(getAllPermissions(persona)));
 
+        claims.put("session_family", sessionFamily);
         String accessToken = buildToken(claims, persona.getUsuario(), jwtExpiration, "access");
-        String refreshToken = buildToken(new HashMap<>(), persona.getUsuario(), refreshExpiration, "refresh");
+        Map<String, Object> refreshClaims = new HashMap<>();
+        refreshClaims.put("session_family", sessionFamily);
+        String refreshToken = buildToken(refreshClaims, persona.getUsuario(), refreshExpiration, "refresh");
 
         return Token.builder()
                 .token(accessToken)
@@ -54,6 +61,7 @@ public class JwtService {
                 .type(TokenType.BEARER)
                 .isRevoked(false)
                 .isExpired(false)
+                .sessionFamily(sessionFamily)
                 .persona(persona)
                 .build();
     }
@@ -94,9 +102,20 @@ public class JwtService {
         return extractClaim(token, claims -> claims.get("token_type", String.class));
     }
 
+    public String sessionFamily(String token) {
+        return extractClaim(token, claims -> claims.get("session_family", String.class));
+    }
+
+    public boolean belongsToSiga(String token) {
+        return "SIGA".equals(extractClaim(token, claims -> claims.get("issuer", String.class)))
+                && "SIGA_API".equals(extractClaim(token, claims -> claims.get("audience", String.class)));
+    }
+
     private String buildToken(Map<String, Object> extraClaims, String username, long expiration, String tokenType) {
         return Jwts.builder()
                 .claims(extraClaims)
+                .claim("issuer", "SIGA")
+                .claim("audience", "SIGA_API")
                 .claim("token_type", tokenType)
                 .subject(username)
                 .issuedAt(new Date(System.currentTimeMillis()))

@@ -10,6 +10,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseCookie;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.web.csrf.CsrfToken;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpStatus;
 
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -18,19 +20,34 @@ public class AuthController {
     private final AuthService authService;
     private final boolean secureCookies;
     private final String sameSite;
+    private final LoginRateLimiter loginRateLimiter;
 
     public AuthController(AuthService authService,
                           @Value("${app.security.cookies.secure:false}") boolean secureCookies,
-                          @Value("${app.security.cookies.same-site:Lax}") String sameSite) {
+                          @Value("${app.security.cookies.same-site:Lax}") String sameSite,
+                          LoginRateLimiter loginRateLimiter) {
         this.authService = authService;
         this.secureCookies = secureCookies;
         this.sameSite = sameSite;
+        this.loginRateLimiter = loginRateLimiter;
     }
 
     @PostMapping("/login")
     public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest request,
-                                              HttpServletResponse response) {
-        return authenticatedResponse(authService.login(request), response);
+                                              HttpServletResponse response,
+                                              HttpServletRequest httpRequest) {
+        String key = httpRequest.getRemoteAddr() + ":" + request.usuario().trim().toLowerCase();
+        if (!loginRateLimiter.isAllowed(key)) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).build();
+        }
+        try {
+            AuthSession session = authService.login(request);
+            loginRateLimiter.clear(key);
+            return authenticatedResponse(session, response);
+        } catch (RuntimeException ex) {
+            loginRateLimiter.recordFailure(key);
+            throw ex;
+        }
     }
 
     @PostMapping("/register")

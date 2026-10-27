@@ -2,7 +2,6 @@ package com.bcsystems.siga.repository;
 
 import com.bcsystems.siga.domain.Token;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -28,4 +27,9 @@ public interface TokenRepository extends JpaRepository<Token, Integer> {
     @Query("UPDATE Token t SET t.isRevoked = true, t.isExpired = true "
             + "WHERE t.persona.idPersona = :personaId AND t.isRevoked = false AND t.isExpired = false")
     int revokeAllByPersonaId(@Param("personaId") Integer personaId);
+
+    @Modifying
+    @Query("UPDATE Token t SET t.isRevoked = true, t.isExpired = true "
+            + "WHERE t.sessionFamily = :family AND t.isRevoked = false AND t.isExpired = false")
+    int revokeAllBySessionFamily(@Param("family") String family);
 }
