@@ -14,7 +14,6 @@ public record RecepcionResponse(
         Integer idUsuario,
         String usuario,
         java.math.BigDecimal totalMetros,
-        java.math.BigDecimal totalRollos,
         String nota,
         LocalDateTime fechaRecepcion,
         List<RecepcionDetalleResponse> detalles

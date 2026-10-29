@@ -17,6 +17,11 @@ public interface ProductoService {
     ProductoResponse transferirStock(Integer idProducto, TransferenciaRequest request);
     ProductoStats obtenerStats();
     java.util.List<java.util.Map<String, Object>> costoPorSucursal();
+    java.util.List<ProductoMultimediaResponse> listarMultimedia(Integer idProducto);
+    ProductoMultimediaResponse agregarMultimedia(Integer idProducto, org.springframework.web.multipart.MultipartFile archivo);
+    void eliminarMultimedia(Integer idProducto, Integer idMultimedia);
+    ProductoMultimediaResponse marcarMultimediaPrincipal(Integer idProducto, Integer idMultimedia);
+    java.util.List<ProductoMultimediaResponse> ordenarMultimedia(Integer idProducto, ProductoMultimediaOrdenRequest request);
 
     record ProductoStats(long total, long activos, java.math.BigDecimal stockGlobal, java.math.BigDecimal stockMinimo, double costoTotalInventario) {}
 }

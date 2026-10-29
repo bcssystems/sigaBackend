@@ -38,7 +38,7 @@ public interface ProductoRepository extends JpaRepository<Producto, Integer> {
                                     @Param("idCategoria") Integer idCategoria,
                                     Pageable pageable);
 
-    @Query(value = "SELECT new com.bcsystems.siga.dto.ProductoVentaProjection(p.idProducto, p.sku, p.nombre, p.precioBase, p.stockActual, p.costoPromedio, p.activo, p.unidadMedida, p.metrosPorRollo) FROM Producto p WHERE p.activo = true " +
+    @Query(value = "SELECT new com.bcsystems.siga.dto.ProductoVentaProjection(p.idProducto, p.sku, p.nombre, p.precioBase, p.stockActual, p.costoPromedio, p.activo, p.unidadMedida) FROM Producto p WHERE p.activo = true " +
            "AND (:search IS NULL OR LOWER(p.nombre) LIKE LOWER(CONCAT('%', :search, '%')) " +
            "OR LOWER(p.sku) LIKE LOWER(CONCAT('%', :search, '%'))) " +
            "AND (:idSucursal IS NULL OR EXISTS (SELECT i FROM InventarioSucursal i WHERE i.producto.idProducto = p.idProducto AND i.sucursal.idSucursal = :idSucursal)) " +

@@ -13,7 +13,6 @@ public record ProductoRequest(
     Double costoPromedio,
     @NotNull Integer idCategoria,
     String unidadMedida,
-    Double metrosPorRollo,
     Boolean activo,
     List<InventarioSucursalRequest> inventarios
 ) {}

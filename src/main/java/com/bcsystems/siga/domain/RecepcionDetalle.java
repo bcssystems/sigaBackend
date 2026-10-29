@@ -29,9 +29,6 @@ public class RecepcionDetalle {
     @Column(nullable = false, precision = 19, scale = 2)
     private java.math.BigDecimal metros;
 
-    @Column(nullable = false, precision = 19, scale = 2)
-    private java.math.BigDecimal rollos;
-
     @Column(nullable = false)
     private Double precioCompra;
 

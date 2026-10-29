@@ -6,7 +6,6 @@ public record RecepcionDetalleResponse(
         String productoNombre,
         String sku,
         java.math.BigDecimal metros,
-        java.math.BigDecimal rollos,
         Double precioCompra,
         Double subtotal
 ) {}

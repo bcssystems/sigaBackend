@@ -38,14 +38,10 @@ ALTER TABLE venta_detalle MODIFY cantidad DECIMAL(19,2) NOT NULL;
 ALTER TABLE venta_detalle_aud MODIFY cantidad DECIMAL(19,2) NOT NULL;
 
 ALTER TABLE recepcion MODIFY total_metros DECIMAL(19,2) NOT NULL;
-ALTER TABLE recepcion MODIFY total_rollos DECIMAL(19,2) NOT NULL;
 ALTER TABLE recepcion_aud MODIFY total_metros DECIMAL(19,2) NOT NULL;
-ALTER TABLE recepcion_aud MODIFY total_rollos DECIMAL(19,2) NOT NULL;
 
 ALTER TABLE recepcion_detalle MODIFY metros DECIMAL(19,2) NOT NULL;
-ALTER TABLE recepcion_detalle MODIFY rollos DECIMAL(19,2) NOT NULL;
 ALTER TABLE recepcion_detalle_aud MODIFY metros DECIMAL(19,2) NOT NULL;
-ALTER TABLE recepcion_detalle_aud MODIFY rollos DECIMAL(19,2) NOT NULL;
 
 ALTER TABLE auditoria MODIFY cantidad DECIMAL(19,2);
 ALTER TABLE auditoria MODIFY stock_anterior DECIMAL(19,2);

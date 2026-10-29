@@ -74,13 +74,11 @@ public class RecepcionServiceImpl implements RecepcionService {
                 .sucursal(sucursal)
                 .usuario(persona)
                 .totalMetros(cero)
-                .totalRollos(cero)
                 .nota(request.nota())
                 .detalles(new ArrayList<>())
                 .build();
 
         java.math.BigDecimal totalMetros = cero;
-        java.math.BigDecimal totalRollos = cero;
         double totalCompra = 0.0;
         String usuarioNombre = persona.getNombre() + (persona.getApellido() != null ? " " + persona.getApellido() : "");
 
@@ -94,18 +92,12 @@ public class RecepcionServiceImpl implements RecepcionService {
                 throw new InvalidEntryException("El precio de compra no puede ser negativo para: " + producto.getNombre());
             }
 
-            double metrosPorRollo = producto.getMetrosPorRollo() != null && producto.getMetrosPorRollo() > 0
-                    ? producto.getMetrosPorRollo() : 1.0;
-            java.math.BigDecimal rollos = java.math.BigDecimal.valueOf(
-                            Math.ceil(dr.metros().doubleValue() / metrosPorRollo))
-                    .setScale(2, java.math.RoundingMode.HALF_UP);
             java.math.BigDecimal precioCompraBd = java.math.BigDecimal.valueOf(dr.precioCompra());
 
             RecepcionDetalle detalle = RecepcionDetalle.builder()
                     .recepcion(recepcion)
                     .producto(producto)
                     .metros(dr.metros())
-                    .rollos(rollos)
                     .precioCompra(dr.precioCompra())
                     .subtotal(precioCompraBd.multiply(dr.metros()).doubleValue())
                     .build();
@@ -113,7 +105,6 @@ public class RecepcionServiceImpl implements RecepcionService {
             totalCompra += detalle.getSubtotal();
 
             totalMetros = totalMetros.add(dr.metros());
-            totalRollos = totalRollos.add(rollos);
 
             java.math.BigDecimal stockAnterior = producto.getStockActual() != null
                     ? producto.getStockActual() : cero;
@@ -155,7 +146,6 @@ public class RecepcionServiceImpl implements RecepcionService {
         }
 
         recepcion.setTotalMetros(totalMetros);
-        recepcion.setTotalRollos(totalRollos);
         recepcion = recepcionRepository.save(recepcion);
         finanzasService.registrarCompra(recepcion.getIdRecepcion(), totalCompra, request.idTipoPago(),
                 request.idSucursal(), recepcion.getFolio());
@@ -207,7 +197,6 @@ public class RecepcionServiceImpl implements RecepcionService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("totalRecepciones", recepcionRepository.count());
         result.put("totalMetros", recepcionRepository.sumTotalMetros());
-        result.put("totalRollos", recepcionRepository.sumTotalRollos());
 
         LocalDateTime desde = LocalDateTime.now().minusDays(30);
         List<Recepcion> recientes = recepcionRepository.buscar(null, null).stream()
@@ -247,7 +236,7 @@ public class RecepcionServiceImpl implements RecepcionService {
                         d.getProducto().getIdProducto(),
                         d.getProducto().getNombre(),
                         d.getProducto().getSku(),
-                        d.getMetros(), d.getRollos(),
+                        d.getMetros(),
                         d.getPrecioCompra(), d.getSubtotal()))
                 .toList();
 
@@ -259,7 +248,7 @@ public class RecepcionServiceImpl implements RecepcionService {
                 r.getSucursal().getIdSucursal(), r.getSucursal().getNombre(),
                 r.getUsuario() != null ? r.getUsuario().getIdPersona() : null,
                 r.getUsuario() != null ? r.getUsuario().getUsuario() : null,
-                r.getTotalMetros(), r.getTotalRollos(),
+                r.getTotalMetros(),
                 r.getNota(), r.getFechaRecepcion(), detalleResponses);
     }
 }

@@ -8,7 +8,6 @@ public record ProductoVentaProjection(
     java.math.BigDecimal stockActual,
     Double costoPromedio,
     Boolean activo,
-    String unidadMedida,
-    Double metrosPorRollo
+    String unidadMedida
 ) {
 }

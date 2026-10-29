@@ -16,11 +16,12 @@ public record ProductoResponse(
     Integer idCategoria,
     String categoriaNombre,
     String unidadMedida,
-    Double metrosPorRollo,
     Boolean activo,
     LocalDateTime fechaCreacion,
     LocalDateTime fechaActualizacion,
-    List<InventarioSucursalResponse> inventarioSucursales
+    List<InventarioSucursalResponse> inventarioSucursales,
+    String imagenPrincipalUrl,
+    long cantidadMultimedia
 ) {
     public record InventarioSucursalResponse(Integer id, Integer idSucursal, String sucursalNombre, java.math.BigDecimal stock, java.math.BigDecimal stockMinimo, java.math.BigDecimal stockMaximo) {}
 }

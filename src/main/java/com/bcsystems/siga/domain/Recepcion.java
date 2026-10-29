@@ -41,9 +41,6 @@ public class Recepcion {
     @Column(nullable = false, precision = 19, scale = 2)
     private java.math.BigDecimal totalMetros;
 
-    @Column(nullable = false, precision = 19, scale = 2)
-    private java.math.BigDecimal totalRollos;
-
     @Column(length = 500)
     private String nota;
 

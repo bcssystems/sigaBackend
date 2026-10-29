@@ -16,7 +16,13 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -30,6 +36,9 @@ public class ProductoServiceImpl implements ProductoService {
     private final CategoriaRepository categoriaRepository;
     private final CodigoGeneratorService codigoGenerator;
     private final AuditoriaService auditoriaService;
+    private final ProductoMultimediaRepository multimediaRepository;
+    @Value("${app.upload.dir:./uploads/multimedia}")
+    private String uploadDir;
 
     public ProductoServiceImpl(ProductoRepository productoRepository,
                                SucursalRepository sucursalRepository,
@@ -37,7 +46,8 @@ public class ProductoServiceImpl implements ProductoService {
                                MovimientoStockRepository movimientoStockRepository,
                                CategoriaRepository categoriaRepository,
                                CodigoGeneratorService codigoGenerator,
-                               AuditoriaService auditoriaService) {
+                               AuditoriaService auditoriaService,
+                               ProductoMultimediaRepository multimediaRepository) {
         this.productoRepository = productoRepository;
         this.sucursalRepository = sucursalRepository;
         this.inventarioSucursalRepository = inventarioSucursalRepository;
@@ -45,6 +55,7 @@ public class ProductoServiceImpl implements ProductoService {
         this.categoriaRepository = categoriaRepository;
         this.codigoGenerator = codigoGenerator;
         this.auditoriaService = auditoriaService;
+        this.multimediaRepository = multimediaRepository;
     }
 
     @Override
@@ -114,7 +125,6 @@ public class ProductoServiceImpl implements ProductoService {
                 .costoPromedio(request.costoPromedio())
                 .categoria(resolverCategoria(request.idCategoria()))
                 .unidadMedida(request.unidadMedida() != null ? request.unidadMedida() : "UNIDAD")
-                .metrosPorRollo(request.metrosPorRollo())
                 .stockActual(stockTotal)
                 .stockMinimo(minTotal)
                 .stockMaximo(maxTotal)
@@ -191,7 +201,6 @@ public class ProductoServiceImpl implements ProductoService {
         if (request.costoPromedio() != null) producto.setCostoPromedio(request.costoPromedio());
         producto.setCategoria(resolverCategoria(request.idCategoria()));
         if (request.unidadMedida() != null) producto.setUnidadMedida(request.unidadMedida());
-        if (request.metrosPorRollo() != null) producto.setMetrosPorRollo(request.metrosPorRollo());
         if (request.activo() != null) producto.setActivo(request.activo());
 
         if (request.inventarios() != null) {
@@ -536,6 +545,142 @@ public class ProductoServiceImpl implements ProductoService {
         return result;
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public List<ProductoMultimediaResponse> listarMultimedia(Integer idProducto) {
+        buscarOExcepcion(idProducto);
+        return multimediaRepository.findByProductoIdProductoOrderByOrdenAscIdMultimediaAsc(idProducto)
+                .stream().map(this::toMultimediaResponse).toList();
+    }
+
+    @Override
+    @Transactional
+    public ProductoMultimediaResponse agregarMultimedia(Integer idProducto, MultipartFile archivo) {
+        Producto producto = buscarOExcepcion(idProducto);
+        if (archivo == null || archivo.isEmpty()) {
+            throw new InvalidEntryException("Selecciona un archivo válido");
+        }
+        if (archivo.getSize() > 20L * 1024 * 1024) {
+            throw new InvalidEntryException("El archivo no puede exceder 20 MB");
+        }
+
+        String original = archivo.getOriginalFilename() == null ? "archivo" :
+                Paths.get(archivo.getOriginalFilename()).getFileName().toString();
+        String extension = "";
+        int punto = original.lastIndexOf('.');
+        if (punto >= 0 && punto < original.length() - 1) {
+            extension = original.substring(punto).replaceAll("[^.A-Za-z0-9]", "");
+        }
+        String ext = extension.toLowerCase(Locale.ROOT);
+        String mime = archivo.getContentType() == null ? "" : archivo.getContentType().toLowerCase(Locale.ROOT);
+        String tipo;
+        if (Set.of(".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif").contains(ext)
+                && (mime.startsWith("image/") || mime.equals("application/octet-stream"))) {
+            tipo = "IMAGEN";
+        } else if (Set.of(".mp4", ".webm", ".mov", ".ogg").contains(ext)
+                && (mime.startsWith("video/") || mime.equals("application/octet-stream"))) {
+            tipo = "VIDEO";
+        } else if (ext.equals(".pdf")
+                && (mime.equals("application/pdf") || mime.equals("application/octet-stream"))) {
+            tipo = "DOCUMENTO";
+        } else {
+            throw new InvalidEntryException("El archivo debe ser una imagen, video compatible o PDF válido");
+        }
+
+        String nombreGuardado = UUID.randomUUID() + extension;
+        Path directorio = Paths.get(uploadDir).toAbsolutePath().normalize();
+        Path destino = directorio.resolve(nombreGuardado).normalize();
+        if (!destino.startsWith(directorio)) throw new InvalidEntryException("Nombre de archivo no válido");
+        try {
+            Files.createDirectories(directorio);
+            Files.copy(archivo.getInputStream(), destino);
+        } catch (IOException ex) {
+            throw new InvalidEntryException("No se pudo guardar el archivo");
+        }
+
+        boolean principal = multimediaRepository.countByProductoIdProducto(idProducto) == 0 && "IMAGEN".equals(tipo);
+        ProductoMultimedia media = multimediaRepository.save(ProductoMultimedia.builder()
+                .producto(producto).tipo(tipo).url("/uploads/" + nombreGuardado)
+                .nombreArchivo(original).orden(multimediaRepository.maxOrden(idProducto) + 1)
+                .esPrincipal(principal).build());
+        auditoriaService.registrar("PRODUCTO", idProducto, AccionAuditoria.ACTUALIZACION.name(), obtenerUsuarioActual(),
+                "Se agregó archivo multimedia al producto: " + original);
+        return toMultimediaResponse(media);
+    }
+
+    @Override
+    @Transactional
+    public void eliminarMultimedia(Integer idProducto, Integer idMultimedia) {
+        buscarOExcepcion(idProducto);
+        ProductoMultimedia media = multimediaRepository.findById(idMultimedia)
+                .filter(m -> m.getProducto().getIdProducto().equals(idProducto))
+                .orElseThrow(() -> new NotFoundException("Archivo multimedia no encontrado"));
+        boolean eraPrincipal = Boolean.TRUE.equals(media.getEsPrincipal());
+        multimediaRepository.delete(media);
+        eliminarArchivo(media.getUrl());
+        if (eraPrincipal) multimediaRepository.findByProductoIdProductoOrderByOrdenAscIdMultimediaAsc(idProducto)
+                .stream().filter(m -> "IMAGEN".equals(m.getTipo())).findFirst()
+                .ifPresent(m -> { m.setEsPrincipal(true); multimediaRepository.save(m); });
+        auditoriaService.registrar("PRODUCTO", idProducto, AccionAuditoria.ACTUALIZACION.name(), obtenerUsuarioActual(),
+                "Se eliminó archivo multimedia " + idMultimedia);
+    }
+
+    @Override
+    @Transactional
+    public ProductoMultimediaResponse marcarMultimediaPrincipal(Integer idProducto, Integer idMultimedia) {
+        buscarOExcepcion(idProducto);
+        ProductoMultimedia seleccionada = multimediaRepository.findById(idMultimedia)
+                .filter(m -> m.getProducto().getIdProducto().equals(idProducto))
+                .orElseThrow(() -> new NotFoundException("Archivo multimedia no encontrado"));
+        if (!"IMAGEN".equals(seleccionada.getTipo())) {
+            throw new InvalidEntryException("Solo una imagen puede ser la principal");
+        }
+        multimediaRepository.findByProductoIdProductoOrderByOrdenAscIdMultimediaAsc(idProducto).forEach(m -> {
+            boolean principal = m.getIdMultimedia().equals(idMultimedia);
+            if (Boolean.TRUE.equals(m.getEsPrincipal()) != principal) {
+                m.setEsPrincipal(principal);
+                multimediaRepository.save(m);
+            }
+        });
+        return toMultimediaResponse(seleccionada);
+    }
+
+    @Override
+    @Transactional
+    public List<ProductoMultimediaResponse> ordenarMultimedia(Integer idProducto, ProductoMultimediaOrdenRequest request) {
+        buscarOExcepcion(idProducto);
+        List<ProductoMultimedia> existentes = multimediaRepository.findByProductoIdProductoOrderByOrdenAscIdMultimediaAsc(idProducto);
+        List<Integer> ids = request.idsOrdenados();
+        Set<Integer> solicitados = new HashSet<>(ids);
+        Set<Integer> actuales = existentes.stream().map(ProductoMultimedia::getIdMultimedia).collect(Collectors.toSet());
+        if (ids.size() != existentes.size() || solicitados.size() != ids.size() || !solicitados.equals(actuales)) {
+            throw new InvalidEntryException("El orden debe incluir todos los archivos del producto una sola vez");
+        }
+        Map<Integer, ProductoMultimedia> porId = existentes.stream()
+                .collect(Collectors.toMap(ProductoMultimedia::getIdMultimedia, m -> m));
+        for (int i = 0; i < ids.size(); i++) {
+            ProductoMultimedia media = porId.get(ids.get(i));
+            media.setOrden(i);
+            multimediaRepository.save(media);
+        }
+        return multimediaRepository.findByProductoIdProductoOrderByOrdenAscIdMultimediaAsc(idProducto)
+                .stream().map(this::toMultimediaResponse).toList();
+    }
+
+    private ProductoMultimediaResponse toMultimediaResponse(ProductoMultimedia media) {
+        return new ProductoMultimediaResponse(media.getIdMultimedia(), media.getProducto().getIdProducto(),
+                media.getTipo(), media.getUrl(), media.getNombreArchivo(), media.getEsPrincipal(),
+                media.getOrden(), media.getFechaSubida());
+    }
+
+    private void eliminarArchivo(String url) {
+        if (url == null || !url.startsWith("/uploads/")) return;
+        Path dir = Paths.get(uploadDir).toAbsolutePath().normalize();
+        Path archivo = dir.resolve(url.substring("/uploads/".length())).normalize();
+        if (!archivo.startsWith(dir)) return;
+        try { Files.deleteIfExists(archivo); } catch (IOException ignored) { }
+    }
+
     private void validarCantidadEnteraSiUnidad(Producto producto, java.math.BigDecimal cantidad) {
         // Las cantidades de todos los productos admiten valores decimales.
     }
@@ -560,7 +705,7 @@ public class ProductoServiceImpl implements ProductoService {
         return new ProductoVentaResponse(
                 p.idProducto(), p.sku(), p.nombre(),
                 p.precioBase(), p.stockActual(), p.costoPromedio(),
-                p.activo(), p.unidadMedida(), p.metrosPorRollo(),
+                p.activo(), p.unidadMedida(),
                 inventario);
     }
 
@@ -588,8 +733,11 @@ public class ProductoServiceImpl implements ProductoService {
                 p.getCostoPromedio(),
                 p.getCategoria() != null ? p.getCategoria().getIdCategoria() : null,
                 p.getCategoria() != null ? p.getCategoria().getNombre() : null,
-                p.getUnidadMedida(), p.getMetrosPorRollo(),
+                p.getUnidadMedida(),
                 p.getActivo(), p.getFechaCreacion(), p.getFechaActualizacion(),
-                inventario);
+                inventario,
+                multimediaRepository.findFirstByProductoIdProductoAndEsPrincipalTrueAndTipoOrderByOrdenAsc(
+                        p.getIdProducto(), "IMAGEN").map(ProductoMultimedia::getUrl).orElse(null),
+                multimediaRepository.countByProductoIdProducto(p.getIdProducto()));
     }
 }

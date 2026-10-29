@@ -24,6 +24,4 @@ public interface RecepcionRepository extends JpaRepository<Recepcion, Integer> {
     @Query("SELECT COALESCE(SUM(r.totalMetros), 0) FROM Recepcion r")
     java.math.BigDecimal sumTotalMetros();
 
-    @Query("SELECT COALESCE(SUM(r.totalRollos), 0) FROM Recepcion r")
-    java.math.BigDecimal sumTotalRollos();
 }

@@ -11,7 +11,6 @@ public record ProductoVentaResponse(
     Double costoPromedio,
     Boolean activo,
     String unidadMedida,
-    Double metrosPorRollo,
     List<InventarioSucursalResponse> inventarioSucursales
 ) {
     public record InventarioSucursalResponse(Integer id, Integer idSucursal, String sucursalNombre, java.math.BigDecimal stock, java.math.BigDecimal stockMinimo, java.math.BigDecimal stockMaximo) {}

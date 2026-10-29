@@ -54,8 +54,6 @@ public class Producto {
     @Column(length = 10)
     private String unidadMedida = "UNIDAD";
 
-    private Double metrosPorRollo;
-
     @Builder.Default
     @Column(nullable = false)
     private Boolean activo = true;
