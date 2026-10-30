@@ -63,7 +63,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/auth/login", "/api/v1/auth/register",
                                 "/api/v1/auth/refresh-token", "/api/v1/auth/logout",
                                 "/api/v1/auth/csrf").permitAll()
-                        .requestMatchers("/uploads/**").permitAll()
+                        .requestMatchers("/uploads/**", "/api/v1/catalogo/**").permitAll()
                         .requestMatchers("/api/v1/kardex/**").authenticated()
                         .requestMatchers("/api/v1/auditorias/**").authenticated()
                         .anyRequest().authenticated()
@@ -76,8 +76,8 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-         config.setAllowedOrigins(Arrays.stream(corsOrigins.split(","))
-                 .map(String::trim).filter(origin -> !origin.isBlank()).toList());
+         config.setAllowedOrigins(Arrays.stream((corsOrigins + ",https://sigashop.omisoltec.mx").split(","))
+                 .map(String::trim).filter(origin -> !origin.isBlank()).distinct().toList());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
          config.setAllowedHeaders(List.of("Content-Type", "Accept", "X-XSRF-TOKEN"));
         config.setAllowCredentials(true);
