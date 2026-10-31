@@ -5,6 +5,7 @@ import com.bcsystems.siga.domain.Producto;
 import com.bcsystems.siga.domain.ProductoMultimedia;
 import com.bcsystems.siga.dto.CatalogoCategoriaResponse;
 import com.bcsystems.siga.dto.CatalogoMediaResponse;
+import com.bcsystems.siga.dto.CatalogoProductoListadoResponse;
 import com.bcsystems.siga.dto.CatalogoProductoResponse;
 import com.bcsystems.siga.exception.NotFoundException;
 import com.bcsystems.siga.repository.CategoriaRepository;
@@ -17,6 +18,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 public class CatalogoServiceImpl implements CatalogoService {
@@ -42,9 +46,14 @@ public class CatalogoServiceImpl implements CatalogoService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<CatalogoProductoResponse> listarProductos(String search, Integer idCategoria, Pageable pageable) {
-        return productoRepository.buscarConFiltros(search, true, null, idCategoria, pageable)
-                .map(this::toResponse);
+    public Page<CatalogoProductoListadoResponse> listarProductos(String search, Integer idCategoria, Pageable pageable) {
+        Page<Producto> page = productoRepository.buscarConFiltros(search, true, null, idCategoria, pageable);
+        List<Integer> ids = page.getContent().stream().map(Producto::getIdProducto).toList();
+        Map<Integer, String> principalPorProducto = multimediaRepository
+                .findByProductoIdProductoInAndTipoOrderByEsPrincipalDescOrdenAscIdMultimediaAsc(ids, "IMAGEN")
+                .stream()
+                .collect(Collectors.toMap(m -> m.getProducto().getIdProducto(), ProductoMultimedia::getUrl, (first, ignored) -> first));
+        return page.map(producto -> toListadoResponse(producto, principalPorProducto.get(producto.getIdProducto())));
     }
 
     @Override
@@ -72,6 +81,14 @@ public class CatalogoServiceImpl implements CatalogoService {
                 categoria != null ? categoria.getIdCategoria() : null,
                 categoria != null ? categoria.getNombre() : null,
                 principal, multimedia);
+    }
+
+    private CatalogoProductoListadoResponse toListadoResponse(Producto producto, String imagenPrincipalUrl) {
+        Categoria categoria = producto.getCategoria();
+        return new CatalogoProductoListadoResponse(
+                producto.getIdProducto(), producto.getSku(), producto.getNombre(), producto.getPrecioBase(),
+                producto.getUnidadMedida(), categoria != null ? categoria.getIdCategoria() : null,
+                categoria != null ? categoria.getNombre() : null, imagenPrincipalUrl);
     }
 
     private CatalogoMediaResponse toMediaResponse(ProductoMultimedia media) {

@@ -1,6 +1,7 @@
 package com.bcsystems.siga.controller;
 
 import com.bcsystems.siga.dto.CatalogoCategoriaResponse;
+import com.bcsystems.siga.dto.CatalogoProductoListadoResponse;
 import com.bcsystems.siga.dto.CatalogoProductoResponse;
 import com.bcsystems.siga.service.CatalogoService;
 import org.springframework.data.domain.Page;
@@ -31,7 +32,7 @@ public class CatalogoController {
     }
 
     @GetMapping("/productos")
-    public ResponseEntity<Page<CatalogoProductoResponse>> productos(
+    public ResponseEntity<Page<CatalogoProductoListadoResponse>> productos(
             @RequestParam(required = false) String search,
             @RequestParam(required = false) Integer idCategoria,
             @PageableDefault(size = 24, sort = "nombre", direction = Sort.Direction.ASC) Pageable pageable) {

@@ -12,6 +12,7 @@ import java.util.Optional;
 public interface ProductoMultimediaRepository extends JpaRepository<ProductoMultimedia, Integer> {
     List<ProductoMultimedia> findByProductoIdProductoOrderByOrdenAscIdMultimediaAsc(Integer idProducto);
     List<ProductoMultimedia> findByProductoIdProductoInOrderByOrdenAscIdMultimediaAsc(Collection<Integer> ids);
+    List<ProductoMultimedia> findByProductoIdProductoInAndTipoOrderByEsPrincipalDescOrdenAscIdMultimediaAsc(Collection<Integer> ids, String tipo);
     long countByProductoIdProducto(Integer idProducto);
     Optional<ProductoMultimedia> findFirstByProductoIdProductoAndEsPrincipalTrueAndTipoOrderByOrdenAsc(Integer idProducto, String tipo);
 
